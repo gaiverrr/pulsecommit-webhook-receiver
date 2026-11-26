@@ -1,0 +1,26 @@
+{
+  "name": "pulsecommit-review-hook",
+  "main": "src/index.js",
+  "compatibility_date": "2025-11-01",
+  "workers_dev": true,
+  "observability": { "enabled": false },
+  "logpush": false,
+  "vars": { "MODE": "review" },
+  "env": {
+    "review": {
+      "name": "pulsecommit-review-hook",
+      "workers_dev": true,
+      "observability": { "enabled": false },
+      "logpush": false,
+      "vars": { "MODE": "review" }
+    },
+    "inbox": {
+      "name": "pulsecommit-inbox",
+      "workers_dev": true,
+      "observability": { "enabled": false },
+      "logpush": false,
+      "vars": { "MODE": "inbox" },
+      "kv_namespaces": [{ "binding": "EVENTS", "id": "REPLACE_WITH_KV_ID" }]
+    }
+  }
+}
