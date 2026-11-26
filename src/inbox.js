@@ -2,9 +2,17 @@ const PREFIX = "evt:";
 const KEEP = 50;
 const TTL_SECONDS = 7 * 24 * 60 * 60;
 const SAFE_ID = /^[A-Za-z0-9._-]{1,128}$/;
+const EVENT_KEY = /^evt:[0-9TZ:.-]+:[A-Za-z0-9._-]{1,128}$/;
+const LIST_BODY_LIMIT = 256 * 1024;
+const encoder = new TextEncoder();
 
 function safeId(value) {
   return typeof value === "string" && SAFE_ID.test(value) ? value : null;
+}
+
+async function latestKeys(kv) {
+  const page = await kv.list({ prefix: PREFIX });
+  return page.keys.map((k) => k.name).sort();
 }
 
 async function listKeys(kv) {
@@ -33,16 +41,30 @@ export async function storeEvent(kv, request, payload, bytes) {
   };
   await kv.put(key, JSON.stringify(record), { expirationTtl: TTL_SECONDS });
   try {
-    const names = await listKeys(kv);
+    const names = await latestKeys(kv);
     const stale = names.slice(0, Math.max(0, names.length - KEEP));
     await Promise.all(stale.map((name) => kv.delete(name)));
   } catch {}
 }
 
+function forList(record) {
+  const text = JSON.stringify(record.body);
+  const bytes = encoder.encode(text);
+  if (bytes.byteLength <= LIST_BODY_LIMIT) return record;
+  const preview = new TextDecoder().decode(bytes.subarray(0, LIST_BODY_LIMIT)).replace(/\uFFFD$/, "");
+  return { ...record, body: preview, truncated: true };
+}
+
 export async function latestEvents(kv) {
-  const names = (await listKeys(kv)).slice(-KEEP).reverse();
+  const names = (await latestKeys(kv)).slice(-KEEP).reverse();
   const records = await Promise.all(names.map((name) => kv.get(name, "json")));
-  return records.flatMap((record, i) => (record ? [{ id: names[i], ...record }] : []));
+  return records.flatMap((record, i) => (record ? [{ id: names[i], ...forList(record) }] : []));
+}
+
+export async function getEvent(kv, id) {
+  if (!EVENT_KEY.test(id)) return null;
+  const record = await kv.get(id, "json");
+  return record ? { id, ...record } : null;
 }
 
 export async function clearEvents(kv) {

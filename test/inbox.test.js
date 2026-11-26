@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import worker from "../src/index.js";
 import { FakeKV } from "./fake-kv.js";
+import { VIEWER_JS } from "../src/viewer.js";
 
 const TOKEN = "webhook-token-abc";
 const VIEW = "view-token-xyz";
@@ -288,7 +289,9 @@ describe("security review fixes", () => {
     expect(small.truncated).toBeUndefined();
     expect(small.body).toEqual(daily(2));
     expect(large.truncated).toBe(true);
-    expect(new TextEncoder().encode(JSON.stringify(large.body)).length).toBeLessThanOrEqual(256 * 1024 + 16);
+    expect(typeof large.body).toBe("string");
+    expect(new TextEncoder().encode(large.body).length).toBeLessThanOrEqual(256 * 1024);
+    expect(large.body.startsWith('{"schema_version":"1.0"')).toBe(true);
 
     const full = await call(`/events/${encodeURIComponent(large.id)}`, { token: VIEW });
     expect(full.status).toBe(200);
@@ -312,5 +315,13 @@ describe("security review fixes", () => {
     const reviewEnv = { WEBHOOK_TOKEN: TOKEN, VIEW_TOKEN: VIEW, EVENTS: kv };
     expect((await call("/events/evt:2026-01-01T00:00:00.000Z:a", { token: VIEW, environment: reviewEnv })).status).toBe(404);
     expect(kv.calls).toEqual([]);
+  });
+
+  it("viewer polls every 30 s, pauses when idle and fetches the full event on open", () => {
+    expect(VIEWER_JS).toContain("const INTERVAL = 30000;");
+    expect(VIEWER_JS).toContain("const IDLE_LIMIT = 10 * 60 * 1000;");
+    expect(VIEWER_JS).toContain("Paused - click Refresh to resume");
+    expect(VIEWER_JS).toContain('"/events/" + encodeURIComponent(id)');
+    expect(VIEWER_JS).toContain("document.hidden");
   });
 });

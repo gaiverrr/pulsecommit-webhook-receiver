@@ -1,4 +1,4 @@
-import { clearEvents, latestEvents, storeEvent } from "./inbox.js";
+import { clearEvents, getEvent, latestEvents, storeEvent } from "./inbox.js";
 import { VIEWER_CSS, VIEWER_HTML, VIEWER_JS } from "./viewer.js";
 
 const MAX_BYTES = 1024 * 1024;
@@ -40,7 +40,7 @@ async function digest(value) {
 
 async function tokenMatches(header, secret) {
   if (typeof secret !== "string" || secret.length === 0) return false;
-  const match = /^Bearer (.+)$/.exec(header ?? "");
+  const match = /^Bearer (.+)$/i.exec(header ?? "");
   const [given, expected] = await Promise.all([digest(match ? match[1] : ""), digest(secret)]);
   let diff = match ? 0 : 1;
   for (let i = 0; i < expected.length; i++) diff |= given[i] ^ expected[i];
@@ -85,6 +85,9 @@ export default {
 
 async function handle(request, env) {
   const url = new URL(request.url);
+  if (typeof env.VIEW_TOKEN === "string" && env.VIEW_TOKEN.length > 0 && env.VIEW_TOKEN === env.WEBHOOK_TOKEN) {
+    return json(500, { ok: false, error: "misconfigured" });
+  }
   const inbox = env.MODE === "inbox";
   if (inbox && !env.EVENTS) return json(500, { ok: false, error: "inbox_not_configured" });
 
@@ -96,6 +99,20 @@ async function handle(request, env) {
     if (!(await tokenMatches(request.headers.get("Authorization"), env.VIEW_TOKEN))) return unauthorized();
     if (request.method === "DELETE") return json(200, { ok: true, deleted: await clearEvents(env.EVENTS) });
     return json(200, { ok: true, events: await latestEvents(env.EVENTS) });
+  }
+
+  if (url.pathname.startsWith("/events/")) {
+    if (!inbox) return notFound();
+    if (request.method !== "GET") return json(405, { ok: false, error: "method_not_allowed" }, { Allow: "GET" });
+    if (!(await tokenMatches(request.headers.get("Authorization"), env.VIEW_TOKEN))) return unauthorized();
+    let id;
+    try {
+      id = decodeURIComponent(url.pathname.slice("/events/".length));
+    } catch {
+      return notFound();
+    }
+    const event = await getEvent(env.EVENTS, id);
+    return event ? json(200, { ok: true, event }) : notFound();
   }
 
   if (request.method === "GET" || request.method === "HEAD") {

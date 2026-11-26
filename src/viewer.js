@@ -25,7 +25,7 @@ export const VIEWER_HTML = `<!doctype html>
 </form>
 <section id="app" hidden>
   <div class="toolbar">
-    <label class="toggle"><input id="auto" type="checkbox" checked> Auto-refresh 10 s</label>
+    <label class="toggle"><input id="auto" type="checkbox" checked> Auto-refresh 30 s</label>
     <button id="refresh" type="button">Refresh</button>
     <button id="clear" type="button" class="danger">Clear inbox</button>
     <button id="logout" type="button">Forget token</button>
@@ -111,7 +111,12 @@ export const VIEWER_JS = `(() => {
   const $ = (id) => document.getElementById(id);
   let events = [];
   let selected = null;
+  let detail = null;
   let timer = null;
+  let paused = false;
+  let lastActivity = Date.now();
+  const INTERVAL = 30000;
+  const IDLE_LIMIT = 10 * 60 * 1000;
 
   const store = {
     get() { try { return sessionStorage.getItem(KEY); } catch { return null; } },
@@ -135,8 +140,8 @@ export const VIEWER_JS = `(() => {
     $("token").focus();
   }
 
-  async function api(method) {
-    const res = await fetch("/events", { method, headers: { Authorization: "Bearer " + token }, cache: "no-store" });
+  async function api(method, path = "/events") {
+    const res = await fetch(path, { method, headers: { Authorization: "Bearer " + token }, cache: "no-store" });
     if (res.status === 401) { showLogin("View token rejected (401)"); return null; }
     if (!res.ok) throw new Error("HTTP " + res.status);
     return res.json();
@@ -174,15 +179,16 @@ export const VIEWER_JS = `(() => {
         el("span", "bytes", fmtBytes(e.bytes)),
         el("span", "meta", [e.date ? "date " + e.date : null, e.idempotency_key ?? "no idempotency key"].filter(Boolean).join("  ·  ")),
       );
-      b.addEventListener("click", () => { selected = e.id; renderList(); renderDetail(); });
+      b.addEventListener("click", () => openEvent(e.id));
       li.append(b);
       list.append(li);
     }
   }
 
-  function renderDetail() {
-    const e = events.find((x) => x.id === selected);
+  function renderDetail(loading = false) {
+    const e = detail && detail.id === selected ? detail : null;
     $("placeholder").hidden = Boolean(e);
+    $("placeholder").textContent = loading ? "Loading event..." : "Select an event.";
     $("detail").hidden = !e;
     $("detail-id").textContent = e ? (e.idempotency_key ?? "") : "";
     if (!e) return;
@@ -191,12 +197,28 @@ export const VIEWER_JS = `(() => {
     $("json").textContent = JSON.stringify(e.body, null, 2);
   }
 
+  async function openEvent(id) {
+    selected = id;
+    renderList();
+    if (detail && detail.id === id) return renderDetail();
+    renderDetail(true);
+    try {
+      const data = await api("GET", "/events/" + encodeURIComponent(id));
+      if (!data || selected !== id) return;
+      detail = data.event;
+      renderDetail();
+    } catch (err) {
+      status("Could not load event: " + err.message, true);
+    }
+  }
+
   async function load() {
     if (!token) return;
     try {
       const data = await api("GET");
       if (!data) return;
       events = Array.isArray(data.events) ? data.events : [];
+      if (selected && !events.some((e) => e.id === selected)) { selected = null; detail = null; }
       renderList();
       renderDetail();
       status("Updated " + new Date().toLocaleTimeString(undefined, { hour12: false }) + "  ·  " + events.length + " events");
@@ -206,16 +228,33 @@ export const VIEWER_JS = `(() => {
   }
 
   function stop() { if (timer) { clearInterval(timer); timer = null; } }
+  function tick() {
+    if (Date.now() - lastActivity > IDLE_LIMIT) {
+      paused = true;
+      stop();
+      status("Paused - click Refresh to resume");
+      return;
+    }
+    load();
+  }
   function schedule() {
     stop();
-    if (token && $("auto").checked && !document.hidden) timer = setInterval(load, 10000);
+    if (token && !paused && $("auto").checked && !document.hidden) timer = setInterval(tick, INTERVAL);
+  }
+  function resume() {
+    paused = false;
+    lastActivity = Date.now();
+    load();
+    schedule();
+  }
+  for (const type of ["pointerdown", "keydown", "wheel", "touchstart"]) {
+    document.addEventListener(type, () => { lastActivity = Date.now(); }, { passive: true });
   }
 
   function connect() {
     $("login").hidden = true;
     $("app").hidden = false;
-    load();
-    schedule();
+    resume();
   }
 
   $("login").addEventListener("submit", (ev) => {
@@ -227,8 +266,8 @@ export const VIEWER_JS = `(() => {
     $("token").value = "";
     connect();
   });
-  $("auto").addEventListener("change", schedule);
-  $("refresh").addEventListener("click", load);
+  $("auto").addEventListener("change", () => { if ($("auto").checked) resume(); else schedule(); });
+  $("refresh").addEventListener("click", resume);
   $("logout").addEventListener("click", () => showLogin());
   $("clear").addEventListener("click", async () => {
     if (!confirm("Delete every stored event?")) return;
@@ -236,13 +275,14 @@ export const VIEWER_JS = `(() => {
       const data = await api("DELETE");
       if (!data) return;
       selected = null;
+      detail = null;
       await load();
     } catch (err) {
       status("Clear failed: " + err.message, true);
     }
   });
   document.addEventListener("visibilitychange", () => {
-    if (!document.hidden && token && $("auto").checked) load();
+    if (!document.hidden && token && !paused && $("auto").checked) load();
     schedule();
   });
 
