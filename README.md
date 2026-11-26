@@ -33,20 +33,25 @@ Pulse Commit does not run this server. If you deploy it, you operate it.
 | Request | Auth | Result |
 | --- | --- | --- |
 | `GET /` | none | Viewer page. Contains no data; it asks for the view token and keeps it in `sessionStorage` for that tab only. |
-| `GET /events` | `Bearer <VIEW_TOKEN>` | `{"ok":true,"events":[...]}`, latest 50, newest first |
+| `GET /events` | `Bearer <VIEW_TOKEN>` | `{"ok":true,"events":[...]}`, latest 50, newest first. A `body` over 256 KB is cut to its first 256 KB of JSON text and the event gets `"truncated": true`. |
+| `GET /events/<id>` | `Bearer <VIEW_TOKEN>` | `{"ok":true,"event":{...}}` with the full body. `<id>` is the event's `id`, URL-encoded. 404 if unknown. |
 | `DELETE /events` | `Bearer <VIEW_TOKEN>` | `{"ok":true,"deleted":N}` |
 
-`VIEW_TOKEN` is a separate secret from `WEBHOOK_TOKEN`. The webhook token cannot read events and the view token cannot post them.
+`VIEW_TOKEN` is a separate secret from `WEBHOOK_TOKEN`. The webhook token cannot read events and the view token cannot post them. The two tokens must differ: if `VIEW_TOKEN` equals `WEBHOOK_TOKEN`, every route returns `500 {"ok":false,"error":"misconfigured"}`.
+
+The `Bearer` scheme is matched case-insensitively.
 
 Events are stored under `evt:<ISO time>:<id>`, where `<id>` is the `Idempotency-Key` header, else the body's `idempotency_key`, else a random UUID. After each write, keys beyond the latest 50 are deleted. If that cleanup fails, the delivery still returns 200 and the next write retries it.
 
 ![Inbox viewer](docs/viewer.png)
 
-The viewer refreshes every 10 s while the tab is visible. Untick Auto-refresh to stop.
+The viewer refreshes every 30 s while the tab is visible. After 10 minutes without a click, key press or scroll it pauses and shows "Paused - click Refresh to resume". Untick Auto-refresh to stop. Opening an event fetches the full event with `GET /events/<id>`.
 
 ### KV free plan limits
 
-On the Workers Free plan, KV allows 1,000 list operations and 1,000 writes per day (check [current limits](https://developers.cloudflare.com/kv/platform/limits/)). Each viewer refresh is 1 list plus up to 50 reads, and each delivery is 1 write plus 1 list. Continuous 10 s polling uses about 360 lists per hour, so keep the tab hidden or turn Auto-refresh off when you are not watching.
+Free plan: 100,000 reads, 1,000 writes, 1,000 deletes and 1,000 lists per day, reset 00:00 UTC. Each refresh = 1 list + up to 50 reads, and opening an event = 1 read. Each delivery = 1 write + 1 list, plus 1 delete once 50 are stored. Clearing the inbox = 1 list + 1 delete per stored event.
+
+At 30 s, a visible viewer uses 120 lists and up to 6,000 reads per hour, so the idle pause keeps a forgotten tab from using up the daily list budget. See [Workers KV limits](https://developers.cloudflare.com/kv/platform/limits/).
 
 ## Deploy
 
@@ -82,7 +87,7 @@ Open `https://pulsecommit-inbox.<your-subdomain>.workers.dev/` and paste the vie
 1. In Pulse Commit open Destinations, Webhook.
 2. Endpoint URL: the `https://pulsecommit-review-hook.<your-subdomain>.workers.dev/` or `https://pulsecommit-inbox.<your-subdomain>.workers.dev/` address printed by `wrangler deploy`.
 3. Header: `Authorization`. Token: the value you stored in `WEBHOOK_TOKEN`.
-4. Tap Send test. The receiver answers `200` with `"event_type":"test"`. In `inbox` the test appears in the viewer within 10 s.
+4. Tap Send test. The receiver answers `200` with `"event_type":"test"`. In `inbox` the test appears in the viewer within 30 s, or at once after Refresh.
 
 ## curl
 
