@@ -246,3 +246,71 @@ describe("review mode", () => {
     });
   }
 });
+
+describe("security review fixes", () => {
+  it("refuses every route when VIEW_TOKEN equals WEBHOOK_TOKEN", async () => {
+    for (const mode of ["inbox", "review"]) {
+      const bad = { MODE: mode, WEBHOOK_TOKEN: TOKEN, VIEW_TOKEN: TOKEN, EVENTS: kv };
+      for (const [path, method, body] of [["/", "POST", daily(1)], ["/", "GET"], ["/events", "GET"], ["/events", "DELETE"], ["/events/x", "GET"]]) {
+        const res = await call(path, { method, token: TOKEN, body, environment: bad });
+        expect(res.status).toBe(500);
+        expect(await res.json()).toEqual({ ok: false, error: "misconfigured" });
+      }
+    }
+    expect(kv.calls).toEqual([]);
+  });
+
+  it("accepts a lowercase bearer scheme", async () => {
+    const res = await call("/", { method: "POST", body: daily(1), headers: { Authorization: `bearer ${TOKEN}` } });
+    expect(res.status).toBe(200);
+    expect((await call("/events", { headers: { Authorization: `BEARER ${VIEW}` } })).status).toBe(200);
+  });
+
+  it("GET /events uses one list and at most 50 reads", async () => {
+    for (let i = 0; i < 55; i++) {
+      await ingest(daily(i));
+      tick();
+    }
+    kv.calls.length = 0;
+    await call("/events", { token: VIEW });
+    expect(kv.calls.filter((c) => c === "list")).toHaveLength(1);
+    expect(kv.calls.filter((c) => c === "get").length).toBeLessThanOrEqual(50);
+    expect(kv.calls.filter((c) => c !== "list" && c !== "get")).toEqual([]);
+  });
+
+  it("truncates bodies over 256 KB in the list and serves the full event by id", async () => {
+    const big = { ...daily(1), summary_markdown: "x".repeat(300 * 1024) };
+    await ingest(big);
+    tick();
+    await ingest(daily(2));
+    const { events } = await (await call("/events", { token: VIEW })).json();
+    const [small, large] = events;
+    expect(small.truncated).toBeUndefined();
+    expect(small.body).toEqual(daily(2));
+    expect(large.truncated).toBe(true);
+    expect(new TextEncoder().encode(JSON.stringify(large.body)).length).toBeLessThanOrEqual(256 * 1024 + 16);
+
+    const full = await call(`/events/${encodeURIComponent(large.id)}`, { token: VIEW });
+    expect(full.status).toBe(200);
+    const { event } = await full.json();
+    expect(event.id).toBe(large.id);
+    expect(event.truncated).toBeUndefined();
+    expect(event.body).toEqual(big);
+  });
+
+  it("GET /events/<id> requires the view token and returns 404 for unknown or malformed ids", async () => {
+    await ingest(daily(1));
+    const id = [...kv.store.keys()][0];
+    expect((await call(`/events/${encodeURIComponent(id)}`)).status).toBe(401);
+    expect((await call(`/events/${encodeURIComponent(id)}`, { token: TOKEN })).status).toBe(401);
+    expect((await call(`/events/${encodeURIComponent("evt:2026-01-01T00:00:00.000Z:missing")}`, { token: VIEW })).status).toBe(404);
+    expect((await call("/events/not-an-event-key", { token: VIEW })).status).toBe(404);
+    expect((await call(`/events/${encodeURIComponent(id)}`, { method: "DELETE", token: VIEW })).status).toBe(405);
+  });
+
+  it("GET /events/<id> returns 404 in review mode without touching KV", async () => {
+    const reviewEnv = { WEBHOOK_TOKEN: TOKEN, VIEW_TOKEN: VIEW, EVENTS: kv };
+    expect((await call("/events/evt:2026-01-01T00:00:00.000Z:a", { token: VIEW, environment: reviewEnv })).status).toBe(404);
+    expect(kv.calls).toEqual([]);
+  });
+});
