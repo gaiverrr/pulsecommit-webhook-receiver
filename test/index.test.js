@@ -40,8 +40,11 @@ describe("receiver", () => {
   });
 
   it("rejects non-POST with 405", async () => {
-    expect((await post("", { method: "GET" })).status).toBe(405);
     expect((await post("", { method: "PUT" })).status).toBe(405);
+  });
+
+  it("returns 404 for GET in review mode", async () => {
+    expect((await post("", { method: "GET" })).status).toBe(404);
   });
 
   it("rejects other paths with 405", async () => {
