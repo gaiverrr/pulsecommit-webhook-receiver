@@ -1,0 +1,8 @@
+{
+  "name": "pulsecommit-webhook-receiver",
+  "main": "src/index.js",
+  "compatibility_date": "2025-11-01",
+  "workers_dev": true,
+  "observability": { "enabled": false },
+  "logpush": false
+}
